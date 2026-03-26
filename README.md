@@ -1,1 +1,316 @@
-# Lab3-Redes
+## Sistema de Pub-Sub Deportivo en Tiempo Real
+
+Un sistema de **publicación-suscripción** implementado en **C++** para distribuir actualizaciones deportivas en vivo (goles, cambios, tarjetas, etc.) usando múltiples protocolos de transporte.
+
+### 📋 Tabla de Contenidos
+
+- [Descripción General](#descripción-general)
+- [Librerías Utilizadas](#librerías-utilizadas)
+- [Descripción de Componentes](#descripción-de-componentes)
+- [Protocolo de Comunicación](#protocolo-de-comunicación)
+- [Implementaciones por Protocolo](#implementaciones-por-protocolo)
+  - [TCP](#tcp)
+  - [UDP](#udp-próximamente)
+  - [QUIC](#quic-próximamente)
+- [Requisitos Generales](#requisitos-generales)
+- [Compilación y Ejecución](#compilación-y-ejecución)
+- [Características](#características)
+- [Limitaciones](#limitaciones)
+- [Notas Técnicas](#notas-técnicas)
+
+---
+
+### Descripción General
+
+**Estado Actual**: Implementación completa con **TCP**
+
+Sistema distribuido que implemena el patrón de publicación-suscripción para:
+
+- ✅ **TCP**: Confiabilidad garantizada en tiempo real
+- ⏳ **UDP**: Baja latencia con entrega no garantizada
+- ⏳ **QUIC**: Conexiones multiplexadas con soporte 0-RTT
+
+### Librerías Utilizadas
+
+#### Librerías Estándar de C++ (C++11)
+
+| Librería       | Propósito              | Uso                                            |
+| -------------- | ---------------------- | ---------------------------------------------- |
+| `<iostream>`   | I/O estándar           | Impresión de mensajes de estado (`std::cout`)  |
+| `<string>`     | Manejo de strings      | Almacenamiento de topics, mensajes y nombres   |
+| `<vector>`     | Contenedores dinámicos | Listas de suscriptores, eventos, args          |
+| `<map>`        | Diccionarios ordenados | Mapeo `topic → lista de suscriptores`          |
+| `<thread>`     | Multithreading         | Manejo de clientes concurrentes en broker      |
+| `<mutex>`      | Sincronización         | Protección de acceso concurrente a estructuras |
+| `<lock_guard>` | RAII para mutex        | Lock automático en bloques sincronizados       |
+
+#### Librerías del Sistema (POSIX)
+
+| Librería         | Propósito                   | Uso                                                                     |
+| ---------------- | --------------------------- | ----------------------------------------------------------------------- |
+| `<sys/socket.h>` | API de sockets              | Creación de sockets TCP (`socket()`, `bind()`, `listen()`, `connect()`) |
+| `<netinet/in.h>` | Estructuras de red          | Direcciones IPv4 (`struct sockaddr_in`)                                 |
+| `<arpa/inet.h>`  | Conversiones de direcciones | `inet_pton()`, `inet_ntop()`                                            |
+| `<unistd.h>`     | I/O de bajo nivel           | `read()`, `write()`, `close()`, `fork()`                                |
+| `<cstring>`      | Operaciones de memoria      | `memset()`, `strlen()`, `strcpy()`                                      |
+| `<cstdlib>`      | Utilidades estándar         | `atoi()`, `exit()`, `malloc()`                                          |
+
+#### Compilación con Flags
+
+```bash
+g++ -std=c++11 -pthread -o [binary] [source.cpp]
+```
+
+- `-std=c++11`: Habilita características de C++11 (threads, mutex, etc.)
+- `-pthread`: Enlaza la librería POSIX de threading
+
+### Descripción de Componentes
+
+#### 🖥️ Broker (Servidor Central)
+
+Actúa como intermediario entre publicadores y suscriptores:
+
+- Recibe mensajes `PUBLISH` y los distribuye
+- Gestiona suscripciones dinámicas a topics (partidos)
+- Maneja múltiples clientes concurrentemente con threads
+- Mantiene estado: mapa `topic → [suscriptores]`
+
+#### 📤 Publisher (Publicador)
+
+Simula periodistas deportivos reportando eventos en vivo:
+
+- Se conecta al broker y publica eventos
+- Envía 14 eventos deportivos por publicador
+- Eventos incluyen: goles, tarjetas, cambios de jugadores, etc.
+- Intervalo entre eventos: 1-3 segundos
+
+#### 📥 Subscriber (Suscriptor)
+
+Clientes que se suscriben a uno o múltiples partidos:
+
+- Se conectan al broker y envían suscripciones
+- Reciben actualizaciones en tiempo real
+- Pueden suscribirse a varios partidos simultáneamente
+- Se ejecutan indefinidamente hasta `Ctrl+C`
+
+### Protocolo de Comunicación
+
+#### Formato de Mensajes
+
+```
+PUBLISH:topic:message
+SUBSCRIBE:topic
+```
+
+**Ejemplos:**
+
+```
+PUBLISH:Real_Madrid_vs_Barcelona:Goal by Player #7 at minute 12
+SUBSCRIBE:Real_Madrid_vs_Barcelona
+```
+
+#### Flujo de Comunicación (Independiente del Protocolo)
+
+1. **Suscriptor** → Broker: `SUBSCRIBE:Real_Madrid_vs_Barcelona`
+2. **Broker** → Registra suscripción en memoria
+3. **Publicador** → Broker: `PUBLISH:Real_Madrid_vs_Barcelona:Goal...`
+4. **Broker** → Distribuye a suscriptores del topic
+5. **Suscriptor** ← Broker: `[Real_Madrid_vs_Barcelona] Goal...`
+
+---
+
+## Implementaciones por Protocolo
+
+### TCP
+
+**Estado**: ✅ **COMPLETO**
+
+#### Requisitos Específicos
+
+- **Compilador**: g++ con soporte C++11
+- **Sistema Operativo**: Ubuntu Server 24 (POSIX)
+- **Librerías**: pthread (compilada con `-pthread`)
+- **Puerto**: 5000 (TCP)
+
+#### Características Específicas TCP
+
+✅ **Confiabilidad**: Los mensajes llegan completos y en orden
+✅ **Multithreading**: Broker maneja múltiples clientes concurrentemente
+✅ **Suscripciones dinámicas**: Clientes pueden conectar/desconectar en tiempo real
+✅ **Control de flujo**: TCP maneja automáticamente backpressure
+✅ **Detección de desconexiones**: Conexiones perdidas se detectan inmediatamente
+
+#### Ventajas vs. Desventajas
+
+| Ventaja                     | Desventaja                                  |
+| --------------------------- | ------------------------------------------- |
+| Garantía de entrega         | Mayor latencia por handshakes               |
+| Preserva orden              | Más overhead de conexión                    |
+| Control de flujo automático | No adecuado para streaming de baja latencia |
+
+#### Compilación TCP
+
+```bash
+cd tcp
+
+g++ -std=c++11 -pthread -o broker broker.cpp
+g++ -std=c++11 -pthread -o publisher publisher.cpp
+g++ -std=c++11 -pthread -o subscriber subscriber.cpp
+```
+
+#### Ejecución TCP
+
+**Terminal 1 - Broker:**
+
+```bash
+# Asumiendo que sigues en tcp/
+./broker
+```
+
+**Terminal 2 - Subscriber:**
+
+```bash
+# Asumiendo que sigues en tcp/
+./subscriber Fan_John Real_Madrid_vs_Barcelona
+```
+
+**Terminal 3 - Publisher:**
+
+```bash
+# Asumiendo que sigues en tcp/
+./publisher Real_Madrid_vs_Barcelona
+```
+
+#### Ejemplo de Salida TCP
+
+```bash
+# Terminal 1 (Broker)
+[BROKER] Escuchando en puerto 5000
+[BROKER] Iniciando servidor...
+[BROKER] Cliente 0 suscrito al tema 'Real_Madrid_vs_Barcelona'
+[BROKER] Publicado en tema 'Real_Madrid_vs_Barcelona'
+
+# Terminal 2 (Subscriber)
+[SUBSCRIBER Fan_John] Conectado al broker en 192.168.77.148:5000
+[SUBSCRIBER Fan_John] Suscrito a: Real_Madrid_vs_Barcelona
+[SUBSCRIBER Fan_John] ACTUALIZACIÓN: [Real_Madrid_vs_Barcelona] Goal by Player #7
+
+# Terminal 3 (Publisher)
+[PUBLISHER Real_Madrid_vs_Barcelona] Conectado al broker
+[PUBLISHER Real_Madrid_vs_Barcelona] Enviado: Gol del jugador #7 en el minuto 12
+```
+
+---
+
+### UDP
+
+**Estado**: ⏳ **EN DESARROLLO**
+
+Implementación de baja latencia sin garantía de entrega.
+_Archivos previsto: `udp/broker.cpp`, `udp/publisher.cpp`, `udp/subscriber.cpp`_
+
+#### Características Planeadas
+
+- 📡 Connectionless (sin establecimiento de conexión)
+- ⚡ Baja latencia para aplicaciones en tiempo real
+- 📉 Sin control de flujo (puede descartar paquetes)
+- 🔄 Adecuado para streaming
+
+---
+
+### QUIC
+
+**Estado**: ⏳ **PRÓXIMAMENTE**
+
+Implementación moderna con multiplex y 0-RTT.
+_Archivos previsto: `quic/broker.cpp`, `quic/publisher.cpp`, `quic/subscriber.cpp`_
+
+#### Características Planeadas
+
+- 🚀 Múltiples streams por conexión
+- 0️⃣ 0-RTT (reanudación instantánea)
+- 🔐 Encriptación obligatoria (TLS 1.3)
+- 🌐 Mejor para conexiones móviles
+
+---
+
+## Requisitos Generales
+
+- **Compilador**: g++ con soporte C++11 o superior
+- **Sistema Operativo**: Ubuntu Server 24 (POSIX compatible)
+- **No requiere librerías externas** (solo estándar de C++ y POSIX)
+
+---
+
+## Compilación y Ejecución
+
+### Archivos del Proyecto
+
+```
+Lab3-Redes/
+├── tcp/                   # ✅ Implementación TCP completada
+│   ├── broker.cpp
+│   ├── publisher.cpp
+│   ├── subscriber.cpp
+│   ├── broker            # Ejecutable
+│   ├── publisher         # Ejecutable
+│   └── subscriber        # Ejecutable
+├── udp/                   # ⏳ En desarrollo
+│   ├── broker.cpp
+│   ├── publisher.cpp
+│   └── subscriber.cpp
+├── quic/                  # ⏳ Próximamente
+│   ├── broker.cpp
+│   ├── publisher.cpp
+│   └── subscriber.cpp
+└── README.md             # Este archivo
+```
+
+## Características
+
+### Implementadas ✅
+
+- ✅ Patrón Pub-Sub completo (TCP)
+- ✅ Multithreading en broker
+- ✅ Sincronización con mutex
+- ✅ Suscripciones dinámicas
+- ✅ 14+ eventos por publicador
+- ✅ Soporte múltiples topics
+
+### En Desarrollo ⏳
+
+- ⏳ UDP (connectionless, baja latencia)
+- ⏳ QUIC (moderno, 0-RTT)
+
+---
+
+## Limitaciones
+
+### TCP
+
+- Máximo 100 clientes simultáneos (configurable)
+- Buffer de 1024 bytes por mensaje (configurable)
+- Sin persistencia (mensajes se pierden)
+- Sin autenticación/encriptación
+
+### UDP (cuando se implemente)
+
+- Sin garantía de entrega
+- Sin orden garantizado
+- Sin control de flujo automático
+
+---
+
+## Notas Técnicas
+
+### Seguridad
+
+- **Thread-safe**: Mutex protegen secciones críticas
+- **Gestión de memoria**: RAII en constructores/destructores
+- **No hay buffer overflows**: Uso de `std::string` (bounds-checked)
+
+### Portabilidad
+
+- **POSIX sockets**: Compatible con Linux, macOS, BSD
+- **C++11 standard**: Compatible con gcc, clang
+- **Sin dependencias externas**: Solo librería estándar
