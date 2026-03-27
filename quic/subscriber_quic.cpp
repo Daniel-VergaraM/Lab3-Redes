@@ -1,0 +1,249 @@
+#include "quic_protocol.h"
+
+#include <iostream>
+#include <cstring>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <thread>
+#include <mutex>
+#include <atomic>
+#include <map>
+#include <set>
+#include <vector>
+#include <chrono>
+#include <csignal>
+
+using namespace std;
+
+const char* BROKER_IP_DEFAULT = "192.168.77.148";
+
+static atomic<bool> sub_running(true);
+
+class Subscriber {
+private:
+    string subscriber_name;
+    int    socket_fd;
+    vector<string> subscriptions;  
+
+    sockaddr_in broker_sub_addr;   
+
+    map<uint32_t, string> recv_buffer;
+    set<uint32_t>         delivered;  
+    uint32_t              next_seq;    
+    mutex                 buf_mutex;
+
+public:
+    Subscriber(const string& name, const char* broker_ip)
+        : subscriber_name(name), socket_fd(-1), next_seq(1)
+    {
+        memset(&broker_sub_addr, 0, sizeof(broker_sub_addr));
+        broker_sub_addr.sin_family = AF_INET;
+        broker_sub_addr.sin_port   = htons(BROKER_SUB_PORT_QUIC);
+        inet_pton(AF_INET, broker_ip, &broker_sub_addr.sin_addr);
+    }
+
+    bool connect_to_broker() {
+        socket_fd = socket(AF_INET, SOCK_DGRAM, 0);
+        if (socket_fd < 0) {
+            cerr << "[SUBSCRIBER " << subscriber_name << "] Error al crear socket" << endl;
+            return false;
+        }
+
+        // Enlazar a puerto libre para que el broker sepa dónde responder
+        sockaddr_in local_addr{};
+        local_addr.sin_family      = AF_INET;
+        local_addr.sin_addr.s_addr = INADDR_ANY;
+        local_addr.sin_port        = 0;
+        if (bind(socket_fd, (sockaddr*)&local_addr, sizeof(local_addr)) < 0) {
+            cerr << "[SUBSCRIBER " << subscriber_name << "] Error al enlazar socket" << endl;
+            return false;
+        }
+
+        struct timeval tv{ 0, 200000 };
+        setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+        char ip_str[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &broker_sub_addr.sin_addr, ip_str, sizeof(ip_str));
+        cout << "[SUBSCRIBER " << subscriber_name << "] Conectado al broker en "
+             << ip_str << ":" << BROKER_SUB_PORT_QUIC << endl;
+        return true;
+    }
+
+    void subscribe_to_match(const string& match_name) {
+        QuicPacket pkt{};
+        set_magic(pkt.header);
+        pkt.header.type        = PacketType::SUBSCRIBE;
+        pkt.header.seq_num     = 0;
+        pkt.header.ack_num     = 0;
+        pkt.header.payload_len = 0;
+        strncpy(pkt.header.topic, match_name.c_str(), MAX_TOPIC_LEN - 1);
+
+        char wire_buf[sizeof(QuicHeader) + MAX_PAYLOAD_LEN];
+        int  wire_len = pkt.serialize(wire_buf, sizeof(wire_buf));
+
+        // Timeout temporal para esperar confirmación de suscripción
+        struct timeval tv{ 0, ACK_TIMEOUT_MS * 1000 };
+        setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+        bool confirmed = false;
+        for (int attempt = 0; attempt <= MAX_RETRIES && !confirmed; attempt++) {
+            if (attempt > 0)
+                cout << "[SUBSCRIBER " << subscriber_name
+                     << "] Reintentando SUBSCRIBE a " << match_name << endl;
+
+            sendto(socket_fd, wire_buf, wire_len, 0,
+                   (sockaddr*)&broker_sub_addr, sizeof(broker_sub_addr));
+
+            char      ack_buf[sizeof(QuicHeader) + MAX_PAYLOAD_LEN];
+            sockaddr_in from{};
+            socklen_t   from_len = sizeof(from);
+            int n = recvfrom(socket_fd, ack_buf, sizeof(ack_buf), 0,
+                             (sockaddr*)&from, &from_len);
+            if (n < 0) continue;
+
+            QuicPacket ack;
+            if (!ack.deserialize(ack_buf, n)) continue;
+            if (ack.header.type == PacketType::ACK) {
+                confirmed = true;
+                subscriptions.push_back(match_name);
+                cout << "[SUBSCRIBER " << subscriber_name
+                     << "] Suscrito a: " << match_name << endl;
+            }
+        }
+        if (!confirmed)
+            cerr << "[SUBSCRIBER " << subscriber_name
+                 << "] No se pudo confirmar suscripción a " << match_name << endl;
+
+        struct timeval tv2{ 0, 200000 };
+        setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, &tv2, sizeof(tv2));
+    }
+
+    void receive_messages() {
+        cout << "[SUBSCRIBER " << subscriber_name << "] Esperando actualizaciones..." << endl;
+
+        char buf[sizeof(QuicHeader) + MAX_PAYLOAD_LEN + 16];
+
+        while (sub_running) {
+            sockaddr_in from{};
+            socklen_t   from_len = sizeof(from);
+
+            int n = recvfrom(socket_fd, buf, sizeof(buf), 0,
+                             (sockaddr*)&from, &from_len);
+            if (n < 0)
+
+            QuicPacket pkt;
+            if (!pkt.deserialize(buf, n)) continue;
+            if (pkt.header.type != PacketType::DELIVER) continue;
+
+            uint32_t seq   = pkt.header.seq_num;
+            string   topic(pkt.header.topic);
+            string   msg(pkt.payload, pkt.header.payload_len);
+
+            send_sub_ack(seq, topic, from);
+
+            lock_guard<mutex> lock(buf_mutex);
+
+            if (delivered.count(seq)) continue;
+
+            recv_buffer[seq] = "[" + topic + "] " + msg;
+
+            drain_buffer();
+        }
+    }
+
+    void start_listening() {
+        thread(&Subscriber::receive_messages, this).detach();
+    }
+
+    void close_connection() {
+        if (socket_fd >= 0) {
+            close(socket_fd);
+            cout << "[SUBSCRIBER " << subscriber_name << "] Conexión cerrada" << endl;
+            socket_fd = -1;
+        }
+    }
+
+    ~Subscriber() {
+        close_connection();
+    }
+
+private:
+    void send_sub_ack(uint32_t acked_seq, const string& topic,
+                      const sockaddr_in& broker_addr) {
+        QuicPacket ack{};
+        set_magic(ack.header);
+        ack.header.type        = PacketType::SUB_ACK;
+        ack.header.seq_num     = 0;
+        ack.header.ack_num     = acked_seq;
+        ack.header.payload_len = 0;
+        strncpy(ack.header.topic, topic.c_str(), MAX_TOPIC_LEN - 1);
+
+        char buf[sizeof(QuicHeader)];
+        ack.serialize(buf, sizeof(buf));
+        sendto(socket_fd, buf, sizeof(QuicHeader), 0,
+               (sockaddr*)&broker_addr, sizeof(broker_addr));
+    }
+
+    void drain_buffer() {
+        while (true) {
+            auto it = recv_buffer.find(next_seq);
+            if (it == recv_buffer.end()) break;
+
+            cout << "[SUBSCRIBER " << subscriber_name
+                 << "] ACTUALIZACIÓN: " << it->second << endl;
+
+            delivered.insert(next_seq);
+            recv_buffer.erase(it);
+            next_seq++;
+        }
+    }
+};
+
+void signal_handler(int) {
+    sub_running = false;
+}
+
+int main(int argc, char* argv[]) {
+    if (argc < 3) {
+        cerr << "Uso: " << argv[0]
+             << " <nombre_suscriptor> <partido1> [<partido2> ...] [ip_broker]" << endl;
+        cerr << "Ejemplo: " << argv[0]
+             << " Fan_Juan Real_Madrid_vs_Barcelona Liverpool_vs_ManCity" << endl;
+        return 1;
+    }
+
+    signal(SIGINT,  signal_handler);
+    signal(SIGTERM, signal_handler);
+
+    string subscriber_name = argv[1];
+
+    const char* broker_ip = BROKER_IP_DEFAULT;
+    int last_match_idx = argc - 1;
+    if (string(argv[argc-1]).find('.') != string::npos) {
+        broker_ip = argv[argc-1];
+        last_match_idx = argc - 2;
+    }
+
+    Subscriber subscriber(subscriber_name, broker_ip);
+
+    if (!subscriber.connect_to_broker()) {
+        cerr << "Fallo al conectar con broker" << endl;
+        return 1;
+    }
+
+    for (int i = 2; i <= last_match_idx; i++) {
+        subscriber.subscribe_to_match(argv[i]);
+    }
+
+    subscriber.start_listening();
+
+    cout << "[SUBSCRIBER " << subscriber_name << "] Presiona Ctrl+C para salir" << endl;
+    while (sub_running) {
+        sleep(1);
+    }
+
+    subscriber.close_connection();
+    return 0;
+}
