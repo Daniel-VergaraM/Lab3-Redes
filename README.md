@@ -123,7 +123,7 @@ SUBSCRIBE:Real_Madrid_vs_Barcelona
 
 ### TCP
 
-**Estado**: ✅ **COMPLETO**
+Para poder probar al 100% el sistema, toca cambiar la variable local `BROKER_IP` en `tcp/publisher.cpp` y en `tcp/subscriber.cpp` a la IP del broker, esta asignada por default a `192.168.77.148` ya que las pruebas se realizaron usando 3 máquinas virtuales y esa sería la IP de la máquina virtual del Broker; por lo que para probar localmente tocaría cambiarlo a `127.0.0.1` (en sistemas basados en Linux).
 
 #### Requisitos Específicos
 
