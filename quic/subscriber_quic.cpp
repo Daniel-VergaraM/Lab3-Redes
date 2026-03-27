@@ -125,6 +125,7 @@ public:
 
         char buf[sizeof(QuicHeader) + MAX_PAYLOAD_LEN + 16];
 
+        QuicPacket pkt;
         while (sub_running) {
             sockaddr_in from{};
             socklen_t   from_len = sizeof(from);
@@ -133,7 +134,7 @@ public:
                              (sockaddr*)&from, &from_len);
             if (n < 0)
 
-            QuicPacket pkt;
+            
             if (!pkt.deserialize(buf, n)) continue;
             if (pkt.header.type != PacketType::DELIVER) continue;
 
