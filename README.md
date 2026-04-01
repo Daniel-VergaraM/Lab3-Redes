@@ -203,20 +203,24 @@ g++ -std=c++11 -pthread -o subscriber subscriber.cpp
 ---
 
 ### UDP
+_Archivos: `udp/broker_udp.cpp`, `udp/publisher_udp.cpp`, `udp/subscriber_udp.cpp`_
 
-**Estado**: ⏳ **EN DESARROLLO**
+Todo similar a TCP, salvo los siguientes cambios principales:
+#### Librerias adicionales UDP
 
-Implementación de baja latencia sin garantía de entrega.
-_Archivos previsto: `udp/broker.cpp`, `udp/publisher.cpp`, `udp/subscriber.cpp`_
+`<algorithm>`
+ Algoritmos STL           
+ Búsqueda de suscriptores duplicados                  
 
-#### Características Planeadas
+`<atomic>`
+ Variables atómicas       
 
-- 📡 Connectionless (sin establecimiento de conexión)
-- ⚡ Baja latencia para aplicaciones en tiempo real
-- 📉 Sin control de flujo (puede descartar paquetes)
-- 🔄 Adecuado para streaming
+`<csignal>`
+ Manejo de señales        
 
----
+`<chrono>`
+ Medición de tiempo       
+
 
 ### QUIC
 
