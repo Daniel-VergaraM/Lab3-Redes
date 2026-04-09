@@ -13,7 +13,7 @@
 
 using namespace std;
 
-const char* BROKER_IP_DEFAULT = "192.168.77.148";
+const char* BROKER_IP_DEFAULT = "192.168.199.129";
 
 class Publisher {
 private:

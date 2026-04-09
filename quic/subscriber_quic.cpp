@@ -1,3 +1,19 @@
+// =============================================================================
+// subscriber_quic.cpp — Subscriber QUIC-like (basado en subscriber.cpp TCP)
+// =============================================================================
+// Mantiene el mismo estilo de clase Subscriber, connect_to_broker,
+// subscribe_to_match, receive_messages y start_listening que subscriber.cpp,
+// pero sobre UDP + los tres mecanismos del bono:
+//
+//   • Secuencia  : recibe paquetes DELIVER con seq_num.
+//   • ACK        : envía SUB_ACK al broker inmediatamente tras cada DELIVER.
+//   • Reorden    : buffer de recepción ordena paquetes fuera de secuencia.
+//   • Deduplicación: ignora seq_num ya entregados (robustez ante retransmisiones).
+//
+// Uso: ./subscriber_quic <nombre> <partido1> [<partido2> ...] [ip_broker]
+//      ./subscriber_quic Fan_Juan Real_Madrid_vs_Barcelona Liverpool_vs_ManCity
+// =============================================================================
+
 #include "quic_protocol.h"
 
 #include <iostream>
@@ -17,7 +33,7 @@
 
 using namespace std;
 
-const char* BROKER_IP_DEFAULT = "192.168.77.148";
+const char* BROKER_IP_DEFAULT = "192.168.199.129";
 
 static atomic<bool> sub_running(true);
 
@@ -25,13 +41,18 @@ class Subscriber {
 private:
     string subscriber_name;
     int    socket_fd;
-    vector<string> subscriptions;  
+    vector<string> subscriptions;   // igual que subscriber.cpp
 
-    sockaddr_in broker_sub_addr;   
+    sockaddr_in broker_sub_addr;    // broker BROKER_SUB_PORT_QUIC
 
+    // IP y puerto propios (detectados al enlazar el socket)
+    string   local_ip;
+    uint16_t local_port = 0;
+
+    // Buffer de reordenamiento: seq_num → "[topic] mensaje"
     map<uint32_t, string> recv_buffer;
-    set<uint32_t>         delivered;  
-    uint32_t              next_seq;    
+    set<uint32_t>         delivered;   // seq ya mostrados (anti-duplicado)
+    uint32_t              next_seq;    // próximo seq esperado en orden
     mutex                 buf_mutex;
 
 public:
@@ -44,6 +65,8 @@ public:
         inet_pton(AF_INET, broker_ip, &broker_sub_addr.sin_addr);
     }
 
+    // ---- connect_to_broker: crea socket UDP y lo enlaza a un puerto libre ----
+    //      (equivalente a connect_to_broker() de subscriber.cpp)
     bool connect_to_broker() {
         socket_fd = socket(AF_INET, SOCK_DGRAM, 0);
         if (socket_fd < 0) {
@@ -61,24 +84,52 @@ public:
             return false;
         }
 
+        // Descubrir IP y puerto reales asignados por el SO
+        socklen_t len = sizeof(local_addr);
+        getsockname(socket_fd, (sockaddr*)&local_addr, &len);
+        local_port = ntohs(local_addr.sin_port);
+
+        // Obtener IP propia mediante conexión UDP sin enviar datos
+        {
+            int tmp = ::socket(AF_INET, SOCK_DGRAM, 0);
+            sockaddr_in tmp_addr = broker_sub_addr;
+            ::connect(tmp, (sockaddr*)&tmp_addr, sizeof(tmp_addr));
+            sockaddr_in me{};
+            socklen_t me_len = sizeof(me);
+            getsockname(tmp, (sockaddr*)&me, &me_len);
+            char ip_buf[INET_ADDRSTRLEN];
+            inet_ntop(AF_INET, &me.sin_addr, ip_buf, sizeof(ip_buf));
+            local_ip = string(ip_buf);
+            close(tmp);
+        }
+
+        // Timeout para que receive_messages pueda revisar sub_running
         struct timeval tv{ 0, 200000 };
         setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
-        char ip_str[INET_ADDRSTRLEN];
-        inet_ntop(AF_INET, &broker_sub_addr.sin_addr, ip_str, sizeof(ip_str));
+        char broker_ip_str[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &broker_sub_addr.sin_addr, broker_ip_str, sizeof(broker_ip_str));
         cout << "[SUBSCRIBER " << subscriber_name << "] Conectado al broker en "
-             << ip_str << ":" << BROKER_SUB_PORT_QUIC << endl;
+             << broker_ip_str << ":" << BROKER_SUB_PORT_QUIC << endl;
+        cout << "[SUBSCRIBER " << subscriber_name << "] Mi dirección: "
+             << local_ip << ":" << local_port << endl;
         return true;
     }
 
+    // ---- subscribe_to_match: envía SUBSCRIBE con ACK + retransmisión ----
+    //      (equivalente a subscribe_to_match() de subscriber.cpp)
     void subscribe_to_match(const string& match_name) {
+        // Incluir "ip:port" en el payload para que el broker sepa dónde enviar DELIVER
+        string self_addr = local_ip + ":" + to_string(local_port);
+
         QuicPacket pkt{};
         set_magic(pkt.header);
         pkt.header.type        = PacketType::SUBSCRIBE;
         pkt.header.seq_num     = 0;
         pkt.header.ack_num     = 0;
-        pkt.header.payload_len = 0;
+        pkt.header.payload_len = (uint16_t)min((int)self_addr.size(), MAX_PAYLOAD_LEN - 1);
         strncpy(pkt.header.topic, match_name.c_str(), MAX_TOPIC_LEN - 1);
+        memcpy(pkt.payload, self_addr.c_str(), pkt.header.payload_len);
 
         char wire_buf[sizeof(QuicHeader) + MAX_PAYLOAD_LEN];
         int  wire_len = pkt.serialize(wire_buf, sizeof(wire_buf));
@@ -116,25 +167,26 @@ public:
             cerr << "[SUBSCRIBER " << subscriber_name
                  << "] No se pudo confirmar suscripción a " << match_name << endl;
 
+        // Restaurar timeout largo para receive_messages
         struct timeval tv2{ 0, 200000 };
         setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, &tv2, sizeof(tv2));
     }
 
+    // ---- receive_messages: bucle de recepción (igual que subscriber.cpp) ----
     void receive_messages() {
         cout << "[SUBSCRIBER " << subscriber_name << "] Esperando actualizaciones..." << endl;
 
         char buf[sizeof(QuicHeader) + MAX_PAYLOAD_LEN + 16];
 
-        QuicPacket pkt;
         while (sub_running) {
             sockaddr_in from{};
             socklen_t   from_len = sizeof(from);
 
             int n = recvfrom(socket_fd, buf, sizeof(buf), 0,
                              (sockaddr*)&from, &from_len);
-            if (n < 0)
+            if (n < 0) continue;    // timeout, volver a intentar
 
-            
+            QuicPacket pkt;
             if (!pkt.deserialize(buf, n)) continue;
             if (pkt.header.type != PacketType::DELIVER) continue;
 
@@ -142,18 +194,23 @@ public:
             string   topic(pkt.header.topic);
             string   msg(pkt.payload, pkt.header.payload_len);
 
+            // ---- SUB_ACK inmediato (mecanismo QUIC #2) ----
             send_sub_ack(seq, topic, from);
 
             lock_guard<mutex> lock(buf_mutex);
 
+            // Descartar duplicados (mecanismo QUIC: re-entrega por retransmisión)
             if (delivered.count(seq)) continue;
 
+            // Almacenar en buffer de reordenamiento (mecanismo QUIC #1)
             recv_buffer[seq] = "[" + topic + "] " + msg;
 
+            // Vaciar buffer en orden
             drain_buffer();
         }
     }
 
+    // ---- start_listening: hilo separado (igual que subscriber.cpp) ----
     void start_listening() {
         thread(&Subscriber::receive_messages, this).detach();
     }
@@ -171,6 +228,7 @@ public:
     }
 
 private:
+    // Enviar SUB_ACK al broker (confirma entrega de un DELIVER)
     void send_sub_ack(uint32_t acked_seq, const string& topic,
                       const sockaddr_in& broker_addr) {
         QuicPacket ack{};
@@ -187,11 +245,14 @@ private:
                (sockaddr*)&broker_addr, sizeof(broker_addr));
     }
 
+    // Vaciar recv_buffer entregando mensajes en orden ascendente de seq_num
+    // (reordenamiento QUIC #3)
     void drain_buffer() {
         while (true) {
             auto it = recv_buffer.find(next_seq);
             if (it == recv_buffer.end()) break;
 
+            // Mismo formato de log que subscriber.cpp
             cout << "[SUBSCRIBER " << subscriber_name
                  << "] ACTUALIZACIÓN: " << it->second << endl;
 
@@ -202,6 +263,7 @@ private:
     }
 };
 
+// ---- Manejador de señales (idéntico a subscriber.cpp) ----
 void signal_handler(int) {
     sub_running = false;
 }
@@ -220,6 +282,7 @@ int main(int argc, char* argv[]) {
 
     string subscriber_name = argv[1];
 
+    // Último argumento: si contiene '.' se asume que es una IP
     const char* broker_ip = BROKER_IP_DEFAULT;
     int last_match_idx = argc - 1;
     if (string(argv[argc-1]).find('.') != string::npos) {
@@ -234,10 +297,12 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // Suscribirse a todos los partidos proporcionados (igual que subscriber.cpp)
     for (int i = 2; i <= last_match_idx; i++) {
         subscriber.subscribe_to_match(argv[i]);
     }
 
+    // Iniciar escucha en hilo separado (igual que subscriber.cpp)
     subscriber.start_listening();
 
     cout << "[SUBSCRIBER " << subscriber_name << "] Presiona Ctrl+C para salir" << endl;
