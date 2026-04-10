@@ -17,7 +17,7 @@
 
 using namespace std;
 
-// ---- Variable global para señales (igual que broker.cpp) ----
+// Variable global para señales 
 atomic<bool> server_running(true);
 
 // ---- Información de un suscriptor ----
@@ -35,7 +35,7 @@ struct PendingDelivery {
     bool           acked;       // true cuando llega SUB_ACK
 };
 
-// =============================================================================
+
 class Broker {
 private:
     int pub_socket;   // socket para publishers 
@@ -320,7 +320,7 @@ private:
                 cout << "[BROKER] No hay suscriptores para '" << topic << "'" << endl;
             }
 
-            // ---- ACK al publisher ----
+            // ACK al publisher 
             QuicPacket ack{};
             set_magic(ack.header);
             ack.header.type        = PacketType::ACK;
