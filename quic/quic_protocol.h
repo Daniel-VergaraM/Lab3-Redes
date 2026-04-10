@@ -29,7 +29,7 @@ enum class PacketType : uint8_t {
 // ---- Cabecera binaria fija ----
 #pragma pack(push, 1)
 struct QuicHeader {
-    uint8_t     magic[4];        // {'Q','U','I','C'} — identificador de protocolo
+    uint8_t     magic[4];        // identificador de protocolo
     PacketType  type;            // tipo de paquete
     uint32_t    seq_num;         // número de secuencia del emisor
     uint32_t    ack_num;         // secuencia que se está confirmando (en ACK/SUB_ACK)

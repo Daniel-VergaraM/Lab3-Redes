@@ -1,19 +1,3 @@
-// =============================================================================
-// subscriber_quic.cpp — Subscriber QUIC-like (basado en subscriber.cpp TCP)
-// =============================================================================
-// Mantiene el mismo estilo de clase Subscriber, connect_to_broker,
-// subscribe_to_match, receive_messages y start_listening que subscriber.cpp,
-// pero sobre UDP + los tres mecanismos del bono:
-//
-//   • Secuencia  : recibe paquetes DELIVER con seq_num.
-//   • ACK        : envía SUB_ACK al broker inmediatamente tras cada DELIVER.
-//   • Reorden    : buffer de recepción ordena paquetes fuera de secuencia.
-//   • Deduplicación: ignora seq_num ya entregados (robustez ante retransmisiones).
-//
-// Uso: ./subscriber_quic <nombre> <partido1> [<partido2> ...] [ip_broker]
-//      ./subscriber_quic Fan_Juan Real_Madrid_vs_Barcelona Liverpool_vs_ManCity
-// =============================================================================
-
 #include "quic_protocol.h"
 
 #include <iostream>
@@ -41,15 +25,14 @@ class Subscriber {
 private:
     string subscriber_name;
     int    socket_fd;
-    vector<string> subscriptions;   // igual que subscriber.cpp
+    vector<string> subscriptions;  
 
     sockaddr_in broker_sub_addr;    // broker BROKER_SUB_PORT_QUIC
 
-    // IP y puerto propios (detectados al enlazar el socket)
+    // IP y puerto propios 
     string   local_ip;
     uint16_t local_port = 0;
 
-    // Buffer de reordenamiento: seq_num → "[topic] mensaje"
     map<uint32_t, string> recv_buffer;
     set<uint32_t>         delivered;   // seq ya mostrados (anti-duplicado)
     uint32_t              next_seq;    // próximo seq esperado en orden
@@ -65,8 +48,7 @@ public:
         inet_pton(AF_INET, broker_ip, &broker_sub_addr.sin_addr);
     }
 
-    // ---- connect_to_broker: crea socket UDP y lo enlaza a un puerto libre ----
-    //      (equivalente a connect_to_broker() de subscriber.cpp)
+    // connect_to_broker: crea socket UDP y lo enlaza a un puerto libre
     bool connect_to_broker() {
         socket_fd = socket(AF_INET, SOCK_DGRAM, 0);
         if (socket_fd < 0) {
@@ -116,8 +98,6 @@ public:
         return true;
     }
 
-    // ---- subscribe_to_match: envía SUBSCRIBE con ACK + retransmisión ----
-    //      (equivalente a subscribe_to_match() de subscriber.cpp)
     void subscribe_to_match(const string& match_name) {
         // Incluir "ip:port" en el payload para que el broker sepa dónde enviar DELIVER
         string self_addr = local_ip + ":" + to_string(local_port);
@@ -172,7 +152,6 @@ public:
         setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, &tv2, sizeof(tv2));
     }
 
-    // ---- receive_messages: bucle de recepción (igual que subscriber.cpp) ----
     void receive_messages() {
         cout << "[SUBSCRIBER " << subscriber_name << "] Esperando actualizaciones..." << endl;
 
@@ -194,15 +173,15 @@ public:
             string   topic(pkt.header.topic);
             string   msg(pkt.payload, pkt.header.payload_len);
 
-            // ---- SUB_ACK inmediato (mecanismo QUIC #2) ----
+            // SUB_ACK inmediato
             send_sub_ack(seq, topic, from);
 
             lock_guard<mutex> lock(buf_mutex);
 
-            // Descartar duplicados (mecanismo QUIC: re-entrega por retransmisión)
+            // Descartar duplicados
             if (delivered.count(seq)) continue;
 
-            // Almacenar en buffer de reordenamiento (mecanismo QUIC #1)
+            // Almacenar en buffer de reordenamiento 
             recv_buffer[seq] = "[" + topic + "] " + msg;
 
             // Vaciar buffer en orden
@@ -210,7 +189,6 @@ public:
         }
     }
 
-    // ---- start_listening: hilo separado (igual que subscriber.cpp) ----
     void start_listening() {
         thread(&Subscriber::receive_messages, this).detach();
     }
@@ -228,7 +206,7 @@ public:
     }
 
 private:
-    // Enviar SUB_ACK al broker (confirma entrega de un DELIVER)
+    // Enviar SUB_ACK al broker 
     void send_sub_ack(uint32_t acked_seq, const string& topic,
                       const sockaddr_in& broker_addr) {
         QuicPacket ack{};
@@ -246,8 +224,6 @@ private:
     }
 
     // Vaciar recv_buffer entregando mensajes en orden ascendente de seq_num
-    // (reordenamiento QUIC #3)
-    void drain_buffer() {
         while (true) {
             auto it = recv_buffer.find(next_seq);
             if (it == recv_buffer.end()) break;
@@ -263,7 +239,7 @@ private:
     }
 };
 
-// ---- Manejador de señales (idéntico a subscriber.cpp) ----
+// Manejador de señales 
 void signal_handler(int) {
     sub_running = false;
 }
@@ -297,12 +273,12 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Suscribirse a todos los partidos proporcionados (igual que subscriber.cpp)
+    // Suscribirse a todos los partidos proporcionados 
     for (int i = 2; i <= last_match_idx; i++) {
         subscriber.subscribe_to_match(argv[i]);
     }
 
-    // Iniciar escucha en hilo separado (igual que subscriber.cpp)
+    // Iniciar escucha en hilo separado 
     subscriber.start_listening();
 
     cout << "[SUBSCRIBER " << subscriber_name << "] Presiona Ctrl+C para salir" << endl;

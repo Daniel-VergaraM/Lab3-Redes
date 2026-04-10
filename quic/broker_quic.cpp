@@ -1,19 +1,3 @@
-// =============================================================================
-// broker_quic.cpp — Broker QUIC-like (basado en broker.cpp TCP)
-// =============================================================================
-// Mantiene el mismo estilo de clases y logs que broker.cpp, pero opera sobre
-// UDP con los tres mecanismos del bono:
-//
-//   • Secuencia  : registra el seq_num de cada PUBLISH recibido.
-//   • ACK        : responde ACK al publisher y espera SUB_ACK del subscriber.
-//   • Retransmit : un hilo independiente reenvía DELIVER sin SUB_ACK.
-//
-// Estructura de hilos (igual que broker.cpp):
-//   • Hilo principal   → acepta mensajes de publishers en BROKER_PORT_QUIC.
-//   • Hilo suscriptores→ acepta SUBSCRIBE y SUB_ACK en BROKER_SUB_PORT_QUIC.
-//   • Hilo retransmit  → revisa entregas pendientes y reenvía si hay timeout.
-// =============================================================================
-
 #include "quic_protocol.h"
 
 #include <iostream>
@@ -54,10 +38,10 @@ struct PendingDelivery {
 // =============================================================================
 class Broker {
 private:
-    int pub_socket;   // socket para publishers  (BROKER_PORT_QUIC)
-    int sub_socket;   // socket para subscribers (BROKER_SUB_PORT_QUIC)
+    int pub_socket;   // socket para publishers 
+    int sub_socket;   // socket para subscribers 
 
-    // topic → lista de suscriptores (igual que topic_subscribers en broker.cpp)
+    // topic → lista de suscriptores
     map<string, vector<SubscriberInfo>> topic_subscribers;
 
     // entregas pendientes: clave = "seq_num|ip:puerto"
@@ -73,7 +57,6 @@ public:
         cleanup();
     }
 
-    // ---- Inicialización (misma lógica que Broker::initialize() en broker.cpp) ----
     bool initialize() {
         // Socket para publishers
         pub_socket = socket(AF_INET, SOCK_DGRAM, 0);
@@ -125,7 +108,6 @@ public:
         return true;
     }
 
-    // ---- Bucle principal (igual que Broker::run() en broker.cpp) ----
     void run() {
         cout << "[BROKER] Iniciando servidor QUIC-like..." << endl;
 
@@ -145,9 +127,7 @@ public:
     }
 
 private:
-    // ------------------------------------------------------------------
     // Helpers
-    // ------------------------------------------------------------------
     string addr_to_str(const sockaddr_in& addr) {
         char buf[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &addr.sin_addr, buf, sizeof(buf));
@@ -165,9 +145,7 @@ private:
         return sendto(sock, buf, len, 0, (sockaddr*)&addr, sizeof(addr)) > 0;
     }
 
-    // ------------------------------------------------------------------
     // Hilo retransmisión — equivalente al control de flujo de TCP
-    // ------------------------------------------------------------------
     void retransmit_loop() {
         while (server_running) {
             this_thread::sleep_for(chrono::milliseconds(100));
@@ -204,10 +182,6 @@ private:
         }
     }
 
-    // ------------------------------------------------------------------
-    // Hilo suscriptores — maneja SUBSCRIBE y SUB_ACK
-    // (equivalente a handle_client() de broker.cpp para suscriptores)
-    // ------------------------------------------------------------------
     void sub_socket_loop() {
         char buf[sizeof(QuicHeader) + MAX_PAYLOAD_LEN + 16];
 
@@ -225,7 +199,6 @@ private:
             string src_str = addr_to_str(src);
 
             if (pkt.header.type == PacketType::SUBSCRIBE) {
-                // ---- Registrar suscriptor (igual que subscribe_client en broker.cpp) ----
                 string topic(pkt.header.topic);
 
                 // El subscriber envía "ip:port" en el payload para que el broker
@@ -262,7 +235,7 @@ private:
                 cout << "[BROKER] Cliente " << deliver_str
                      << " suscrito al tema '" << topic << "'" << endl;
 
-                // Confirmar suscripción (igual que "Suscrito a <topic>\n" en broker.cpp)
+                // Confirmar suscripción 
                 QuicPacket ack{};
                 set_magic(ack.header);
                 ack.header.type        = PacketType::ACK;
@@ -272,7 +245,7 @@ private:
                 send_packet(sub_socket, ack, src);
 
             } else if (pkt.header.type == PacketType::SUB_ACK) {
-                // ---- El suscriptor confirmó recepción de un DELIVER ----
+                // El suscriptor confirmó recepción de un DELIVER 
                 string key = pending_key(pkt.header.ack_num, src_str);
                 lock_guard<mutex> lock(pending_mutex);
                 auto it = pending_deliveries.find(key);
@@ -285,10 +258,7 @@ private:
         }
     }
 
-    // ------------------------------------------------------------------
-    // Hilo principal — maneja PUBLISH
-    // (equivalente a handle_client() de broker.cpp para publishers)
-    // ------------------------------------------------------------------
+
     void pub_socket_loop() {
         char buf[sizeof(QuicHeader) + MAX_PAYLOAD_LEN + 16];
 
@@ -311,7 +281,7 @@ private:
             cout << "[BROKER] PUBLISH seq=" << seq
                  << " tema='" << topic << "' msg='" << message << "'" << endl;
 
-            // ---- Reenviar a suscriptores (igual que publish_message en broker.cpp) ----
+            // Reenviar a suscriptores
             vector<SubscriberInfo> targets;
             {
                 lock_guard<mutex> lock(clients_mutex);
@@ -364,7 +334,7 @@ private:
     }
 };
 
-// ---- Manejador de señales (idéntico a broker.cpp) ----
+
 void signal_handler(int signal) {
     cout << "\n[BROKER] Señal recibida (" << signal << "), cerrando servidor..." << endl;
     server_running = false;
