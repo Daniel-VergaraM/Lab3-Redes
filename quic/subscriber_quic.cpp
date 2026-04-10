@@ -228,7 +228,7 @@ private:
             auto it = recv_buffer.find(next_seq);
             if (it == recv_buffer.end()) break;
 
-            // Mismo formato de log que subscriber.cpp
+            // Mismo formato de log
             cout << "[SUBSCRIBER " << subscriber_name
                  << "] ACTUALIZACIÓN: " << it->second << endl;
 
